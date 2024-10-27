@@ -1,0 +1,222 @@
+import "yue" as yue
+
+-- we use macros for these currently, so we can later add $FILE or $LINE macros if needed
+macro dbg = (message) ->
+  'print "[yuepack] debug: ", ' .. message
+
+macro warn = (message) ->
+  'print "[yuepack] warning: ", ' .. message
+
+macro assert = (condition, message) ->
+  'error "[yuepack] assertion failed: " .. ' .. message .. " unless " .. condition
+
+bootstrap = [[
+macro import = (module, name) ->
+  map = %s
+  resolved = map[module::sub 2, -2]
+  resolved = resolved[name::sub 2, -2] if resolved?
+  -- fallback to require if we can't resolve statically
+  return "require%%q[%%q]"::format module, name unless resolved?
+
+  resolved -- this will be the name of a local variable
+macro _set_current_module = (module) ->
+  global _current_module = module
+  ""
+macro export = (name, expr) ->
+  map = %s
+  uplocal = map[_current_module::sub 2, -2]
+  uplocal = uplocal[name::sub 2, -2] if uplocal?
+  -- we cant fallback to an export here, so throw error
+  -- this shouldnt happen in the first place
+  return "error 'export %%q not found in %%q'"::format name, _current_module unless uplocal?
+
+  "%%s = %%s"::format uplocal, expr
+]]
+
+variable_name = => @
+  ::gsub "[^%w]", "_"
+  ::gsub "__+", "_"
+
+deep_tostring = =>
+  switch type @
+    when "string"
+      return "%q"::format @
+    when "number"
+      return @
+    when "boolean"
+      return @ and "true" or "false"
+    when "table"
+      parts = {}
+      parts[] = "[%s]: %s"::format deep_tostring(k), deep_tostring(v) for k, v in pairs @
+      return "{%s}"::format table.concat parts, ", "
+    else
+      return "<%s>"::format type @
+
+indent_code = =>
+  @gsub "([^\n]*)", "  %1"
+
+export __author__ = "Leo Developer"
+export __url__ = "https://github.com/le0developer/yuepack"
+export __license__ = "MIT"
+export __version__ = "0.1.0"
+
+export class Packer
+  new: (@options = {}) =>
+    @loaded = {}
+    @modules = {}
+
+  include: (module, filename) =>
+    return if @loaded[module]
+
+    filename = package.searchpath module, package.path::gsub "%.lua", ".yue" unless filename?
+    unless filename?
+      $warn "failed to statically resolve %q"::format module
+      return
+
+    $dbg "resolved #{module} to #{filename}"
+
+    local content
+    with fd = io.open filename, "r"
+      return unless fd? -- no idea how this can happen, but here we are
+      content = fd::read "*a"
+      fd::close!
+
+    $dbg "loaded #{module}, size: #{#content} bytes"
+    @loaded[module] = true
+
+    ast = yue.to_ast content
+    exports = {}
+    @parse_exports ast, exports
+
+    $dbg "found #{#exports} exports in #{module}"
+    $dbg "exports: #{table.concat exports, ", "}" if #exports > 0
+
+    @modules[] = {module, content, exports}
+
+  parse_exports: (ast, exports) =>
+    if ast[4]? and ast[4][1] == "Callable" and ast[4][4][1] == "MacroName" and ast[4][4][4][1] == "UnicodeName"
+      -- $dbg "macro " .. deep_tostring ast
+      switch ast[4][4][4][4]
+        when "export"
+          $assert ast[5][1] == "InvokeArgs", "export must be called"
+          $assert ast[5][4]?, "export must have an argument"
+          node = ast[5][4]
+          node = node[4] while node? and node[1] != "String"
+          $assert node?, "export must have a string argument"
+          node = node[4] while node? and "string" != type node[4]
+          $assert node?, "export must have a string argument"
+
+          name = node[4]
+          exports[] = name
+          $dbg "found export in ast #{name}"
+          return
+
+        when "import"
+          $assert ast[5][1] == "InvokeArgs", "import must be called"
+          $assert ast[5][4]?, "import must have an argument"
+          node = ast[5][4]
+          node = node[4] while node? and node[1] != "String"
+          $assert node?, "import must have a string argument"
+          node = node[4] while node? and "string" != type node[4]
+          $assert node?, "import must have a string argument"
+
+          module = node[4]
+          $dbg "importing #{module}"
+          @include module
+          return
+
+    for node in *ast[4,]
+      @parse_exports node, exports if "table" == type node
+
+  pack: (entry) =>
+    @include "_entry", entry
+
+  export: =>
+    packed = @bootstrap!
+    header = ""
+    if @options.with_header != false
+        header = "-- yuepacked using #{__version__}\n"
+    header .. packed
+
+  bootstrap: =>
+    mapping = {}
+    all_exports = {}
+    $dbg "bootstrapping..."
+    for [module, _, exports] in *@modules
+      module_mapping = {}
+      for export_name in *exports
+        name = "_export_%s_%s"::format variable_name(module), variable_name export_name
+        $dbg "mapping export #{export_name} in #{module} to #{name}"
+        module_mapping[export_name] = name
+        all_exports[] = name
+        mapping[module] = module_mapping
+
+    mapping = deep_tostring mapping
+    code = {}
+    code[] = "local #{table.concat all_exports, ", "}" if #all_exports > 0
+    code[] = bootstrap::format mapping, mapping
+    for [module, content, exports] in *@modules
+      $dbg "bootstrapping #{module}"
+      code[] = "\n-- %s\n$_set_current_module %q\ndo\n%s"::format module, module, indent_code content
+
+    code = table.concat code, "\n"
+    $dbg "bootstrapping done, size: #{#code} bytes"
+
+    code, err = yue.to_lua code, implicit_return_root: false, reserve_line_number: false
+    $assert code, "failed to compile bootstrap: #{err}\n#{code}"
+
+    code
+
+-- cli
+cli = (arguments) ->
+  options = {}
+  for arg in *arguments
+    continue if "-" != arg::sub 1, 1
+    operator, name = arg::match "^-(%w+)-([%w-]+)$"
+    if operator?
+      error "invalid operator" if operator != "yes" and operator != "no"
+      name = name::gsub "-", "_"
+      options[name] = operator == "yes"
+      continue
+
+    name, value = arg::match "^-([%w-]+)=([%w-_./]+)$"
+    if name?
+      options[name::gsub "-", "_"] = value
+      continue
+
+  print "Using yuepack #{__version__}"
+  option_str = table.concat ["#{key}=#{if "string" == type value then value elseif value then "yes" else "no"}" for key, value in pairs options], ", "
+  print "Options: #{option_str}" if #option_str > 0
+  print!
+
+  options.alias = alias_factory! if options.alias == true
+
+  for filename in *arguments
+    continue if "-" == filename::sub 1, 1
+    print "Packing #{filename}"
+    packer = Packer options
+    packer::pack filename
+
+    packed = packer::export!
+    outfile = options.outfile or filename::gsub "%.(%a+)$", ".lua"
+    print "Packed into #{outfile}"
+    break if filename == outfile
+    with fd = io.open outfile, "w"
+      error "could not open file" unless fd?
+      ::write packed
+      ::close!
+
+
+check_cli = =>
+  return if #@ == 0
+  return unless arg? -- support for cli args
+
+  -- check if they match
+  for i = 1, #@
+    return if arg[i] != @[i] -- dont match
+  
+  true
+
+
+arguments = {...}
+cli arguments if check_cli arguments

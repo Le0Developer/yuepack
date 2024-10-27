@@ -1,0 +1,2 @@
+-- module.yue
+$export "text", "world"
