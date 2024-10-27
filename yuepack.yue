@@ -140,10 +140,14 @@ export class Packer
 
   export: =>
     packed = @bootstrap!
+
+    result, err = yue.to_lua packed, implicit_return_root: false, reserve_line_number: false
+    $assert result, "failed to compile bootstrap: #{err}\n#{packed}"
+
     header = ""
     if @options.with_header != false
         header = "-- yuepacked using #{__version__}\n"
-    header .. packed
+    header .. result
 
   bootstrap: =>
     mapping = {}
@@ -169,9 +173,7 @@ export class Packer
     code = table.concat code, "\n"
     $dbg "bootstrapping done, size: #{#code} bytes"
 
-    result, err = yue.to_lua code, implicit_return_root: false, reserve_line_number: false
-    $assert result, "failed to compile bootstrap: #{err}\n#{code}"
-    result
+    code
 
 -- cli
 cli = (arguments) ->
