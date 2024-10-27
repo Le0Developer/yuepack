@@ -1,0 +1,3 @@
+text = $import "module"
+
+print "Hello", text

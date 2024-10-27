@@ -14,7 +14,7 @@ bootstrap = [[
 macro import = (module, name) ->
   map = %s
   resolved = map[module::sub 2, -2]
-  resolved = resolved[name::sub 2, -2] if resolved?
+  resolved = resolved[name and name::sub(2, -2) or "@default"] if resolved?
   -- fallback to require if we can't resolve statically
   return "require%%q[%%q]"::format module, name unless resolved?
 
@@ -23,9 +23,12 @@ macro _set_current_module = (module) ->
   global _current_module = module
   ""
 macro export = (name, expr) ->
+  unless expr?
+    expr = name
+    name = nil
   map = %s
   uplocal = map[_current_module::sub 2, -2]
-  uplocal = uplocal[name::sub 2, -2] if uplocal?
+  uplocal = uplocal[name and name::sub(2, -2) or "@default"] if uplocal?
   -- we cant fallback to an export here, so throw error
   -- this shouldnt happen in the first place
   return "error 'export %%q not found in %%q'"::format name, _current_module unless uplocal?
@@ -100,13 +103,15 @@ export class Packer
         when "export"
           $assert ast[5][1] == "InvokeArgs", "export must be called"
           $assert ast[5][4]?, "export must have an argument"
-          node = ast[5][4]
-          node = node[4] while node? and node[1] != "String"
-          $assert node?, "export must have a string argument"
-          node = node[4] while node? and "string" != type node[4]
-          $assert node?, "export must have a string argument"
+          name = "@default"
+          if ast[5][5]?
+            node = ast[5][4]
+            node = node[4] while node? and node[1] != "String"
+            $assert node?, "export must have a string argument"
+            node = node[4] while node? and "string" != type node[4]
+            $assert node?, "export must have a string argument"
+            name = node[4]
 
-          name = node[4]
           exports[] = name
           $dbg "found export in ast #{name}"
           return
@@ -162,10 +167,9 @@ export class Packer
     code = table.concat code, "\n"
     $dbg "bootstrapping done, size: #{#code} bytes"
 
-    code, err = yue.to_lua code, implicit_return_root: false, reserve_line_number: false
-    $assert code, "failed to compile bootstrap: #{err}\n#{code}"
-
-    code
+    result, err = yue.to_lua code, implicit_return_root: false, reserve_line_number: false
+    $assert result, "failed to compile bootstrap: #{err}\n#{code}"
+    result
 
 -- cli
 cli = (arguments) ->
