@@ -60,6 +60,8 @@ deep_tostring = =>
 indent_code = =>
   @gsub "([^\n]*)", "  %1"
 
+package_path = package.path::gsub "%.lua", ".yue"
+
 export __author__ = "Leo Developer"
 export __url__ = "https://github.com/le0developer/yuepack"
 export __license__ = "MIT"
@@ -73,7 +75,7 @@ export class Packer
   include: (module, filename) =>
     return if @loaded[module]
 
-    filename = package.searchpath module, package.path::gsub "%.lua", ".yue" unless filename?
+    filename = package.searchpath module, package_path unless filename?
     unless filename?
       $warn "failed to statically resolve %q"::format module
       return
