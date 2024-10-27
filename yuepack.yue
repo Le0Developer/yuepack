@@ -16,7 +16,9 @@ macro import = (module, name) ->
   resolved = map[module::sub 2, -2]
   resolved = resolved[name and name::sub(2, -2) or "@default"] if resolved?
   -- fallback to require if we can't resolve statically
-  return "require%%q[%%q]"::format module, name unless resolved?
+  unless resolved?
+    print "[yuepack] warning:", "failed to find import %%q"::format module
+    return "require%%q[%%q]"::format module, name
 
   resolved -- this will be the name of a local variable
 macro _set_current_module = (module) ->
