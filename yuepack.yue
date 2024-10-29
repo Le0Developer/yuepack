@@ -91,7 +91,10 @@ export class Packer
     $dbg "loaded #{module}, size: #{#content} bytes"
     @loaded[module] = true
 
-    ast = yue.to_ast content
+    ast, err = yue.to_ast content
+    if err?
+      $warn "failed to parse %q: %s"::format module, err
+      return
     exports = {}
     @parse_exports ast, exports
 
